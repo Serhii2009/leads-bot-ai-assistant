@@ -276,7 +276,7 @@ async function writeToGoogleSheets(userData) {
     )
     await doc.loadInfo()
 
-    const sheet = doc.sheetsByTitle['BotLeads'] || doc.sheetsByIndex[0]
+    const sheet = doc.sheetsByTitle['LeadsTest'] || doc.sheetsByIndex[0]
 
     await sheet.addRow({
       username: userData.username || '',
