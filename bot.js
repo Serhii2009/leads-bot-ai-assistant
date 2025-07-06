@@ -3,14 +3,14 @@ const TelegramBot = require('node-telegram-bot-api')
 const axios = require('axios')
 const { GoogleSpreadsheet } = require('google-spreadsheet')
 const { JWT } = require('google-auth-library')
+const express = require('express')
 
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true })
+// HTTP сервер для Render
+const app = express()
+const PORT = process.env.PORT || 3000
 
-// Додати на початок bot.js після створення bot
-bot
-  .deleteWebHook()
-  .then(() => console.log('Webhook deleted successfully'))
-  .catch((err) => console.log('No webhook to delete or error:', err.message))
+// Створюємо бота без polling спочатку
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false })
 
 // Система пам'яті для зберігання історії розмов
 const userMemory = new Map()
@@ -338,6 +338,8 @@ bot.on('message', async (msg) => {
   // Ігноруємо не-текстові повідомлення
   if (!userMessage) return
 
+  console.log(`[EduMax] Отримано повідомлення від ${userId}: ${userMessage}`)
+
   try {
     // Підготовка даних для Google Sheets
     const userData = {
@@ -359,48 +361,153 @@ bot.on('message', async (msg) => {
       parse_mode: 'Markdown',
       disable_web_page_preview: true,
     })
+
+    console.log(`[EduMax] Відповідь надіслана користувачу ${userId}`)
   } catch (error) {
     console.error('Помилка:', error.response?.data || error.message)
     await bot.sendMessage(chatId, 'Вибач, виникла помилка. Спробуй пізніше.')
   }
 })
 
-// HTTP сервер для Render
-const express = require('express')
-const app = express()
-const PORT = process.env.PORT || 3000
+// Функція для ініціалізації бота
+async function initializeBot() {
+  try {
+    console.log('[EduMax] Ініціалізація бота...')
+
+    // Видаляємо webhook якщо він існує
+    await bot.deleteWebHook()
+    console.log('[EduMax] Webhook видалено')
+
+    // Чекаємо трохи
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+
+    // Запускаємо polling
+    await bot.startPolling()
+    console.log('[EduMax] Polling запущено')
+
+    // Перевіряємо статус бота
+    const me = await bot.getMe()
+    console.log('[EduMax] Бот запущено:', me.username)
+
+    return true
+  } catch (error) {
+    console.error('[EduMax] Помилка ініціалізації бота:', error)
+    return false
+  }
+}
+
+// Функція для перезапуску бота
+async function restartBot() {
+  try {
+    console.log('[EduMax] Перезапуск бота...')
+    await bot.stopPolling()
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+    await initializeBot()
+    console.log('[EduMax] Бот перезапущено')
+  } catch (error) {
+    console.error('[EduMax] Помилка перезапуску бота:', error)
+  }
+}
 
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({
     status: 'OK',
-    message: 'Telegram bot is running',
+    message: 'EduMax Pro Telegram bot is running',
     timestamp: new Date().toISOString(),
+    botStatus: bot.isPolling() ? 'polling' : 'stopped',
   })
 })
 
-// Endpoint для статистики (опціонально)
+// Endpoint для пробудження бота
+app.get('/wake', async (req, res) => {
+  try {
+    console.log('[EduMax] Wake endpoint викликано')
+
+    // Перевіряємо чи працює polling
+    if (!bot.isPolling()) {
+      console.log('[EduMax] Бот не працює, запускаємо...')
+      await initializeBot()
+    }
+
+    // Надсилаємо тестове повідомлення самому собі
+    try {
+      await bot.getMe()
+      console.log('[EduMax] Бот активний')
+    } catch (error) {
+      console.log('[EduMax] Бот не відповідає, перезапускаємо...')
+      await restartBot()
+    }
+
+    res.json({
+      status: 'OK',
+      message: 'EduMax bot is awake',
+      timestamp: new Date().toISOString(),
+      botStatus: bot.isPolling() ? 'polling' : 'stopped',
+    })
+  } catch (error) {
+    console.error('[EduMax] Помилка wake endpoint:', error)
+    res.status(500).json({
+      status: 'ERROR',
+      message: error.message,
+      timestamp: new Date().toISOString(),
+    })
+  }
+})
+
+// Endpoint для статистики
 app.get('/stats', (req, res) => {
   res.json({
     totalUsers: userMemory.size,
     uptime: process.uptime(),
     memoryUsage: process.memoryUsage(),
+    botStatus: bot.isPolling() ? 'polling' : 'stopped',
   })
 })
 
 // Запуск сервера
-app.listen(PORT, () => {
-  console.log(`HTTP server running on port ${PORT}`)
+app.listen(PORT, async () => {
+  console.log(`[EduMax] HTTP server running on port ${PORT}`)
+
+  // Ініціалізуємо бота після запуску сервера
+  await initializeBot()
 })
 
-// Keep-alive функція (оновлена для Render)
+// Покращений keep-alive механізм
 if (process.env.RENDER_EXTERNAL_URL) {
   setInterval(async () => {
     try {
-      await axios.get(process.env.RENDER_EXTERNAL_URL)
-      console.log('Keep-alive ping sent')
+      // Пінгуємо wake endpoint замість головної сторінки
+      const wakeUrl = `${process.env.RENDER_EXTERNAL_URL}/wake`
+      const response = await axios.get(wakeUrl, { timeout: 30000 })
+      console.log('[EduMax] Keep-alive ping успішний:', response.data.botStatus)
     } catch (error) {
-      console.error('Keep-alive ping failed:', error.message)
+      console.error('[EduMax] Keep-alive ping failed:', error.message)
+      // Спробуємо перезапустити бота
+      await restartBot()
     }
-  }, 15 * 60 * 1000) // Кожні 15 хвилин
+  }, 14 * 60 * 1000) // Кожні 14 хвилин (до засинання)
 }
+
+// Обробка помилок
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[EduMax] Unhandled Rejection at:', promise, 'reason:', reason)
+})
+
+process.on('uncaughtException', (error) => {
+  console.error('[EduMax] Uncaught Exception:', error)
+  process.exit(1)
+})
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('[EduMax] SIGTERM received, shutting down gracefully')
+  await bot.stopPolling()
+  process.exit(0)
+})
+
+process.on('SIGINT', async () => {
+  console.log('[EduMax] SIGINT received, shutting down gracefully')
+  await bot.stopPolling()
+  process.exit(0)
+})
